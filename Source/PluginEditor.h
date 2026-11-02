@@ -165,6 +165,7 @@ private:
 
     juce::TooltipWindow tooltips { this, 400 };
     int shownPreset = -1;
+    bool snapshotDone = false;
     float levelL = 0.0f, levelR = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SwellAdLibEditor)

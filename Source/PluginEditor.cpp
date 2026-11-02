@@ -593,6 +593,39 @@ void SwellAdLibEditor::timerCallback()
         c->setAlpha (alpha);
     for (auto* b : moduleButtons) b->setAlpha (alpha);
 
+    // Dev helper for the README pictures: SWELL_SNAPSHOT=<file.png> [SWELL_SNAPSHOT_PRESET=n] [SWELL_SNAPSHOT_MODULE=n]
+    if (! snapshotDone)
+    {
+        snapshotDone = true;
+        const auto file = juce::SystemStats::getEnvironmentVariable ("SWELL_SNAPSHOT", {});
+        if (file.isNotEmpty())
+        {
+            proc.loadPreset (juce::SystemStats::getEnvironmentVariable ("SWELL_SNAPSHOT_PRESET", "0").getIntValue());
+            presetChanged();
+            const int module = juce::SystemStats::getEnvironmentVariable ("SWELL_SNAPSHOT_MODULE", "-1").getIntValue();
+            if (module >= 0)
+                selectModule (module);
+            for (int i = 0; i < SwellAdLibProcessor::waveSize; ++i)
+                proc.wave[(size_t) i].store (0.04f + 0.3f * std::pow (std::abs (std::sin ((float) i * 0.19f) * std::sin ((float) i * 0.047f)), 1.5f));
+            proc.peakL.store (0.5f);
+            proc.peakR.store (0.45f);
+            levelL = levelR = 0.0f;
+
+            juce::Timer::callAfterDelay (300, [this, file]
+            {
+                juce::FileOutputStream out { juce::File (file) };
+                if (out.openedOk())
+                {
+                    out.setPosition (0);
+                    out.truncate();
+                    juce::PNGImageFormat().writeImageToStream (createComponentSnapshot (getLocalBounds(), true, 2.0f), out);
+                }
+                if (auto* app = juce::JUCEApplicationBase::getInstance())
+                    app->systemRequestedQuit();
+            });
+        }
+    }
+
     levelL = juce::jmax (proc.peakL.exchange (0.0f), levelL * 0.85f);
     levelR = juce::jmax (proc.peakR.exchange (0.0f), levelR * 0.85f);
     meterL.setLevel (levelL);
@@ -671,7 +704,7 @@ void SwellAdLibEditor::paint (juce::Graphics& g)
     g.drawRoundedRectangle (desc, 10.0f, 1.0f);
     g.setColour (dim);
     g.setFont (swellFont (12.0f));
-    g.drawFittedText (preset.description, desc.reduced (12.0f, 10.0f).toNearestInt(), juce::Justification::topLeft, 5);
+    g.drawFittedText (preset.description, desc.reduced (12.0f, 10.0f).toNearestInt(), juce::Justification::topLeft, 5, 1.0f);
 
     // Chain
     drawSectionLabel (g, utf8 ("CHA\xc3\x8eNE D'EFFETS"), { 260, 474, 120, 16 });

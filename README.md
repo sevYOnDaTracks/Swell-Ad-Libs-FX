@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/main.png" alt="Swell Ad-lib FX" width="820">
+</p>
+
 <h1 align="center">Swell Ad-lib FX</h1>
 
 <p align="center">
@@ -15,6 +19,11 @@ Pour les plus curieux, chaque effet de la chaîne se règle en détail : un clic
 ## La chaîne d'effets
 
 La voix traverse les 7 effets dans cet ordre. Chaque effet s'allume ou s'éteint indépendamment.
+Un clic sur un effet ouvre ses réglages : ON/OFF, mode et 3 curseurs.
+
+<p align="center">
+  <img src="docs/module.png" alt="Réglages du module COLOR en mode Phone" width="820">
+</p>
 
 | Effet | Modes | Réglages |
 |---|---|---|
