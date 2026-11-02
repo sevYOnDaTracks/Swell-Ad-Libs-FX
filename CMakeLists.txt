@@ -29,7 +29,7 @@ if(APPLE)
 endif()
 
 juce_add_plugin(SwellAdLibFX
-    COMPANY_NAME "Swell"
+    COMPANY_NAME "Swell-audio"
     BUNDLE_ID com.swell.adlibfx
     PLUGIN_MANUFACTURER_CODE Swel
     PLUGIN_CODE Adlb
@@ -55,6 +55,18 @@ target_compile_definitions(SwellAdLibFX PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0)
+
+# Offline demo renderer: runs a dry vocal through every preset (see tools/RenderDemo.cpp)
+juce_add_console_app(SwellAdLibRender PRODUCT_NAME "SwellAdLibRender")
+target_sources(SwellAdLibRender PRIVATE tools/RenderDemo.cpp)
+target_compile_definitions(SwellAdLibRender PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(SwellAdLibRender
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)
 
 target_link_libraries(SwellAdLibFX
     PRIVATE
