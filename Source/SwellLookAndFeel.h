@@ -6,19 +6,20 @@
 // Shared Swell brand style: anthracite panels, orange accents
 namespace SwellColours
 {
-inline const juce::Colour background { 0xff17171a };
-inline const juce::Colour panel      { 0xff1f1f23 };
+inline const juce::Colour background { 0xff10151b };
+inline const juce::Colour panel      { 0xff1c232c };
 inline const juce::Colour panelDark  { 0xff1a1a1d };
-inline const juce::Colour panelLight { 0xff25262b };
-inline const juce::Colour well       { 0xff121215 };
-inline const juce::Colour control    { 0xff26262b };
-inline const juce::Colour border     { 0xff2c2c32 };
-inline const juce::Colour borderHi   { 0xff33333a };
-inline const juce::Colour track      { 0xff2c2c32 };
-inline const juce::Colour orange     { 0xffff8a3d };
+inline const juce::Colour panelLight { 0xff273240 };
+inline const juce::Colour well       { 0xff11171d };
+inline const juce::Colour control    { 0xff26313e };
+inline const juce::Colour border     { 0xff354353 };
+inline const juce::Colour borderHi   { 0xff47566a };
+inline const juce::Colour track      { 0xff354353 };
+inline const juce::Colour orange     { 0xffedac75 };
 inline const juce::Colour orangeDeep { 0xff5a3a22 };
 inline const juce::Colour text       { 0xffececf0 };
-inline const juce::Colour dim        { 0xff9a9aa3 };
+inline const juce::Colour dim        { 0xffa9b5c4 };
+inline const juce::Colour accentBlue { 0xff99b9de };
 } // namespace SwellColours
 
 inline juce::Font swellFont (float size, bool bold = false)
@@ -41,6 +42,11 @@ public:
     {
         using namespace SwellColours;
         setColour (juce::ResizableWindow::backgroundColourId, background);
+        setColour (juce::ComboBox::backgroundColourId, well);
+        setColour (juce::ComboBox::textColourId, text);
+        setColour (juce::ComboBox::outlineColourId, borderHi);
+        setColour (juce::ComboBox::arrowColourId, dim);
+        setColour (juce::Slider::rotarySliderFillColourId, accentBlue);
         setColour (juce::PopupMenu::backgroundColourId, panelLight);
         setColour (juce::PopupMenu::textColourId, text);
         setColour (juce::PopupMenu::headerTextColourId, dim);
@@ -49,7 +55,7 @@ public:
         setColour (juce::TextButton::buttonColourId, control);
         setColour (juce::TextButton::buttonOnColourId, orange);
         setColour (juce::TextButton::textColourOffId, text);
-        setColour (juce::TextButton::textColourOnId, background);
+        setColour (juce::TextButton::textColourOnId, text);
         setColour (juce::Slider::textBoxTextColourId, text);
         setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
@@ -76,7 +82,7 @@ public:
 
         juce::Path value;
         value.addCentredArc (centre.x, centre.y, arcR, arcR, 0.0f, startAngle, angle, true);
-        g.setColour (slider.isEnabled() ? orange : orange.withAlpha (0.3f));
+        g.setColour (slider.findColour (juce::Slider::rotarySliderFillColourId).withMultipliedAlpha (slider.isEnabled() ? 1.0f : 0.4f));
         g.strokePath (value, stroke);
 
         const float knobR = radius * 0.67f;
@@ -87,7 +93,7 @@ public:
                                                  juce::Colour (0xff1c1c20), centre.x + knobR * 0.4f, centre.y + knobR * 0.7f, true));
         g.fillEllipse (knob);
 
-        g.setColour (orange);
+        g.setColour (slider.findColour (juce::Slider::rotarySliderFillColourId));
         g.drawLine ({ centre.getPointOnCircumference (knobR * 0.45f, angle), centre.getPointOnCircumference (knobR * 0.85f, angle) }, 4.0f);
     }
 
@@ -104,6 +110,18 @@ public:
         g.fillEllipse (juce::Rectangle<float> (14.0f, 14.0f).withCentre ({ sliderPos, cy }));
     }
 
+    void drawComboBox (juce::Graphics& g, int width, int height, bool, int, int, int, int, juce::ComboBox& box) override
+    {
+        auto r = juce::Rectangle<float> ((float) width, (float) height).reduced (0.5f);
+        g.setColour (box.findColour (juce::ComboBox::backgroundColourId)); g.fillRoundedRectangle (r, 5);
+        g.setColour (box.findColour (juce::ComboBox::outlineColourId)); g.drawRoundedRectangle (r, 5, 1);
+        const float x = r.getRight() - 14, y = r.getCentreY();
+        juce::Path arrow;
+        arrow.startNewSubPath (x-3, y-1.5f); arrow.lineTo (x,y+1.5f); arrow.lineTo (x+3,y-1.5f);
+        g.setColour (box.findColour (juce::ComboBox::arrowColourId)); g.strokePath (arrow,juce::PathStrokeType (1.4f));
+    }
+
+    juce::Font getComboBoxFont (juce::ComboBox&) override { return swellFont (14.0f, true); }
     juce::Font getPopupMenuFont() override { return swellFont (14.0f); }
 
     void drawButtonBackground (juce::Graphics& g, juce::Button& button, const juce::Colour&, bool over, bool down) override
@@ -113,13 +131,13 @@ public:
         const bool on = button.getToggleState();
         const float corner = (float) button.getProperties().getWithDefault ("corner", 8.0f);
 
-        auto colour = on ? orange : control;
+        auto colour = on ? juce::Colour (0xff354c62) : control;
         if (over) colour = colour.brighter (0.08f);
         if (down) colour = colour.darker (0.1f);
 
         g.setColour (colour);
         g.fillRoundedRectangle (r, corner);
-        g.setColour (on ? orange : borderHi);
+        g.setColour (on ? accentBlue.withAlpha (0.65f) : borderHi);
         g.drawRoundedRectangle (r, corner, 1.0f);
     }
 

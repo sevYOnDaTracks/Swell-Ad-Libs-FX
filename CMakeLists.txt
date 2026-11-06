@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.22)
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "")
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "")
 
-project(SwellAdLibFX VERSION 1.0.0)
+project(SwellAdLibFX VERSION 1.1.1)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,11 +21,9 @@ FetchContent_Declare(JUCE
 FetchContent_MakeAvailable(JUCE)
 
 set(SWELL_FORMATS Standalone VST3)
-set(SWELL_COPY_AFTER_BUILD FALSE)
+option(SWELL_COPY_AFTER_BUILD "Copy plug-ins into the user audio folders" ${APPLE})
 if(APPLE)
     list(APPEND SWELL_FORMATS AU)
-    # On Mac the plugin folders live in ~/Library, so copying needs no admin rights
-    set(SWELL_COPY_AFTER_BUILD TRUE)
 endif()
 
 juce_add_plugin(SwellAdLibFX
@@ -77,3 +75,13 @@ target_link_libraries(SwellAdLibFX
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+option(SWELL_BUILD_TESTS "Build audio processing regression checks" OFF)
+if(SWELL_BUILD_TESTS)
+    enable_testing()
+    add_executable(SwellAdLibChecks Tests/AudioChecks.cpp)
+    target_link_libraries(SwellAdLibChecks PRIVATE SwellAdLibFX)
+    target_include_directories(SwellAdLibChecks PRIVATE Source $<TARGET_PROPERTY:SwellAdLibFX,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(SwellAdLibChecks PRIVATE $<TARGET_PROPERTY:SwellAdLibFX,COMPILE_DEFINITIONS>)
+    add_test(NAME AdLibAudioChecks COMMAND SwellAdLibChecks)
+endif()

@@ -2,7 +2,7 @@
 
 #include <juce_dsp/juce_dsp.h>
 
-// The Ad-lib FX signal chain: Clean -> Punch -> Pitch -> Color -> Mod -> Delay -> Reverb -> Width.
+// The Ad-lib FX signal chain: Clean -> Punch -> Pitch -> Color -> Mod -> Flange -> Delay -> Reverb -> Width.
 // Every module works on a stereo block in place; the engine feeds them sub-blocks of at most maxBlock samples.
 namespace AdLib
 {
@@ -15,10 +15,13 @@ struct Settings
     bool pitchOn = false;  float semitones = 0.0f, pitchMix = 1.0f, fineCents = 0.0f;
     bool colorOn = false;  int colorMode = 0;  float dirt = 0.3f, colorTone = 0.6f, colorMix = 1.0f;
     bool modOn = false;    int modMode = 0;    float modDepth = 0.5f, modRate = 0.6f, modMix = 0.5f;
+    bool flangeOn = false; int flangeMode = 0;
+    float flangeDepth = 0.55f, flangeRate = 0.35f, flangeMix = 0.55f, flangeFeedback = 0.4f;
     bool delayOn = false;  int delayMode = 0;  float delayFeedback = 0.35f, delayTone = 0.6f, delayMix = 0.35f;
     bool throwOn = false;
     bool reverbOn = false; int reverbMode = 1; float reverbSize = 0.5f, preDelayMs = 20.0f, reverbMix = 0.35f;
     float space = 0.5f, width = 0.5f;
+    float delayDuck = 0.0f, reverbDuck = 0.0f;
     double bpm = 120.0;
 };
 
@@ -322,6 +325,127 @@ private:
 };
 
 //==============================================================================
+// Flanger and four-voice Flangus stage, independent of the chorus.
+class Flange
+{
+public:
+    void prepare (double sampleRate)
+    {
+        sr = sampleRate;
+        for (auto& line : buffer) line.assign ((size_t) std::ceil (sr * 0.025) + 3, 0.0f);
+        position = available = 0;
+        phase = {0.0f, 0.29f, 0.54f, 0.82f};
+        returnTone[0] = returnTone[1] = 0;
+        damping = onePole (sr, 1.0 / (juce::MathConstants<double>::twoPi * 5400.0));
+        for (auto* value : { &mix, &depth, &feedback, &stack, &rate })
+            value->reset (sr, 0.015);
+        mix.setCurrentAndTargetValue (0);
+        depth.setCurrentAndTargetValue (0.5f);
+        feedback.setCurrentAndTargetValue (0.35f);
+        rate.setCurrentAndTargetValue (0.4f);
+        stack.setCurrentAndTargetValue (0);
+    }
+
+    void deactivate()
+    {
+        available = 0;
+        returnTone[0] = returnTone[1] = 0.0f;
+        mix.setCurrentAndTargetValue (0.0f);
+    }
+
+    void process (float* left, float* right, int n, const Settings& settings)
+    {
+        mix.setTargetValue (settings.flangeOn ? settings.flangeMix : 0.0f);
+        if (! settings.flangeOn && ! mix.isSmoothing() && mix.getCurrentValue() == 0.0f)
+        {
+            available = 0;
+            returnTone[0] = returnTone[1] = 0;
+            return;
+        }
+
+        depth.setTargetValue (settings.flangeDepth);
+        feedback.setTargetValue (settings.flangeFeedback * 0.80f);
+        stack.setTargetValue (settings.flangeMode == 1 ? 1.0f : 0.0f);
+        rate.setTargetValue (settings.flangeRate);
+        const float samplesPerMs = (float) sr * 0.001f;
+        constexpr float speeds[] { 1.0f, 0.81f, 1.19f, 0.67f };
+        for (int i = 0; i < n; ++i)
+        {
+            const float amount = mix.getNextValue(), width = depth.getNextValue();
+            const float resonance = feedback.getNextValue(), layers = stack.getNextValue();
+            const float step = rate.getNextValue() / (float) sr;
+            float dry[] {left[i], right[i]};
+            float wet[2] {};
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float stereo = ch == 0 ? 0.0f : 0.23f;
+                float sweep = 0;
+                if (layers < 1.0f)
+                    sweep = tap (ch, samplesPerMs * (0.48f + width * 4.5f * wave (phase[0] + stereo)));
+                float cloud = 0;
+                if (layers > 0.0f)
+                    for (size_t voice = 0; voice < phase.size(); ++voice)
+                    {
+                        const float centre = 2.1f + (float) voice * 1.8f;
+                        const float excursion = width * (2.6f + (float) voice * 0.8f);
+                        cloud += tap (ch, samplesPerMs * (centre + excursion * wave (phase[voice] + stereo))) * 0.25f;
+                    }
+                wet[ch] = sweep + layers * (cloud - sweep);
+                returnTone[ch] = damping * returnTone[ch] + (1.0f - damping) * wet[ch];
+                // Damped, bounded feedback keeps the resonance below self-oscillation.
+                buffer[ch][(size_t) position] = dry[ch] + resonance * std::tanh (returnTone[ch]);
+            }
+            const float blend = 0.5f * amount;
+            left[i]  = dry[0] + blend * (wet[0] - dry[0]);
+            right[i] = dry[1] + blend * (wet[1] - dry[1]);
+            for (size_t v = 0; v < phase.size(); ++v)
+            {
+                phase[v] += step * speeds[v];
+                if (phase[v] >= 1.0f) phase[v] -= 1.0f;
+            }
+            if (++position == (int) buffer[0].size()) position = 0;
+            available = std::min (available + 1, (int) buffer[0].size());
+        }
+    }
+
+private:
+    static float wave (float p) { return 0.5f + 0.5f * std::sin (juce::MathConstants<float>::twoPi * p); }
+    float tap (int ch, float delay) const
+    {
+        return delay + 1.0f <= (float) available ? readFrac (buffer[ch], position, delay) : 0.0f;
+    }
+
+    double sr = 44100.0;
+    std::vector<float> buffer[2];
+    int position = 0, available = 0;
+    std::array<float, 4> phase {};
+    float damping = 0.0f, returnTone[2] {};
+    juce::SmoothedValue<float> mix, depth, feedback, stack, rate;
+};
+
+//==============================================================================
+// Stereo-linked attenuation of the wet return, without changing the echo timing or feedback.
+class ReturnDucker
+{
+public:
+    void prepare (double sampleRate, double releaseSeconds)
+    {
+        attack = onePole (sampleRate, 0.006);
+        release = onePole (sampleRate, releaseSeconds);
+        envelope = 0;
+    }
+
+    float gain (float left, float right, float amount)
+    {
+        envelope = follow (envelope, std::max (std::abs (left), std::abs (right)), attack, release);
+        return 1.0f / (1.0f + 14.0f * amount * envelope);
+    }
+
+private:
+    float attack = 0, release = 0, envelope = 0;
+};
+
+//==============================================================================
 // 06 DELAY: tempo-synced echo. THROW only feeds the delay at the end of words.
 class Delay
 {
@@ -332,10 +456,22 @@ public:
         for (auto& b : buf) b.assign ((size_t) (sr * 4.0) + 1, 0.0f);
         write = 0;
         prepareFilter (tone, sr, SVF::Type::lowpass);
-        fastAtt = onePole (sr, 0.001); fastRel = onePole (sr, 0.03);
+        for (auto& h : history) h.assign ((size_t) std::ceil (sr * 0.100) + 1, 0.0f);
+        historyPos = valid = 0;
+        ducker.prepare (sr, 0.18);
+        fastAtt = onePole (sr, 0.001); fastRel = onePole (sr, 0.015);
         slowAtt = onePole (sr, 0.005); slowRel = onePole (sr, 0.3);
         gateAtt = onePole (sr, 0.005); gateRel = onePole (sr, 0.12);
         fast = slow = gate = 0.0f;
+    }
+
+    void deactivate()
+    {
+        if (valid == 0) return;
+        valid = 0;
+        fast = slow = gate = 0.0f;
+        tone.reset();
+        ducker.prepare (sr, 0.18);
     }
 
     void process (float* L, float* R, int n, const Settings& s)
@@ -347,6 +483,8 @@ public:
         const int size = (int) buf[0].size();
         const int d = juce::jlimit (1, size - 1, (int) (beat * beats[mode] * sr));
         const bool ping = mode == 4;
+        const int historySize = (int) history[0].size();
+        const int lead = std::min (d - 1, historySize - 1);
         const float fb = s.delayFeedback * 0.9f;
         const float wet = s.delayMix * s.space;
         setCutoff (tone, sr, 1000.0f * std::pow (12.0f, s.delayTone));
@@ -355,36 +493,46 @@ public:
         {
             const float inL = L[i], inR = R[i];
 
-            float send = 1.0f;
-            if (s.throwOn)
-            {
-                const float lvl = juce::jmax (std::abs (inL), std::abs (inR));
-                fast = follow (fast, lvl, fastAtt, fastRel);
-                slow = follow (slow, lvl, slowAtt, slowRel);
-                const float target = (slow > 0.02f && fast < slow * 0.45f) ? 1.0f : 0.0f;
-                gate = follow (gate, target, gateAtt, gateRel);
-                send = gate;
-            }
+            history[0][(size_t) historyPos] = inL;
+            history[1][(size_t) historyPos] = inR;
+            const float lvl = juce::jmax (std::abs (inL), std::abs (inR));
+            fast = follow (fast, lvl, fastAtt, fastRel);
+            slow = follow (slow, lvl, slowAtt, slowRel);
+            const float target = (slow > 0.002f && fast < slow * 0.55f) ? 1.0f : 0.0f;
+            gate = follow (gate, target, gateAtt, gateRel);
 
             int r = write - d;
             if (r < 0) r += size;
-            const float rl = buf[0][(size_t) r], rr = buf[1][(size_t) r];
+            const float rl = valid >= d ? buf[0][(size_t) r] : 0.0f;
+            const float rr = valid >= d ? buf[1][(size_t) r] : 0.0f;
             const float fl = tone.processSample (0, rl), fr = tone.processSample (1, rr);
 
-            if (ping)
+            buf[0][(size_t) write] = (ping ? fr : fl) * fb;
+            buf[1][(size_t) write] = (ping ? fl : fr) * fb;
+            // A falling envelope arrives after the word. Feed the preceding syllable
+            // into its original slot in the delay line so its repeat stays on the beat.
+            int at = write;
+            float sendL = inL, sendR = inR;
+            if (s.throwOn)
             {
-                buf[0][(size_t) write] = (inL + inR) * 0.5f * send + fr * fb;
-                buf[1][(size_t) write] = fl * fb;
+                const int read = (historyPos + historySize - lead) % historySize;
+                sendL = valid >= lead ? history[0][(size_t) read] * gate : 0.0f;
+                sendR = valid >= lead ? history[1][(size_t) read] * gate : 0.0f;
+                at = (write + size - lead) % size;
             }
+            if (ping)
+                buf[0][(size_t) at] += 0.5f * (sendL + sendR);
             else
             {
-                buf[0][(size_t) write] = inL * send + fl * fb;
-                buf[1][(size_t) write] = inR * send + fr * fb;
+                buf[0][(size_t) at] += sendL;
+                buf[1][(size_t) at] += sendR;
             }
-
+            valid = std::min (valid + 1, size);
+            if (++historyPos == historySize) historyPos = 0;
             if (++write >= size) write = 0;
-            L[i] = inL + rl * wet;
-            R[i] = inR + rr * wet;
+            const float returnGain = wet * ducker.gain (inL, inR, s.delayDuck);
+            L[i] = inL + rl * returnGain;
+            R[i] = inR + rr * returnGain;
         }
     }
 
@@ -393,6 +541,9 @@ private:
     std::vector<float> buf[2];
     int write = 0;
     SVF tone;
+    std::vector<float> history[2];
+    int historyPos = 0, valid = 0;
+    ReturnDucker ducker;
     float fastAtt = 0, fastRel = 0, slowAtt = 0, slowRel = 0, gateAtt = 0, gateRel = 0;
     float fast = 0, slow = 0, gate = 0;
 };
@@ -405,10 +556,12 @@ public:
     void prepare (double sampleRate)
     {
         sr = sampleRate;
+        ducker.prepare (sr, 0.28);
         reverb.setSampleRate (sr);
         reverb.reset();
         for (auto& b : pre) b.assign ((size_t) (sr * 0.2) + 1, 0.0f);
-        preWrite = 0;
+        preWrite = validPre = validReverse = 0;
+        active = false;
         prepareFilter (dark, sr, SVF::Type::lowpass);
         setCutoff (dark, sr, 2500.0f);
         const auto maxLen = (size_t) (sr * 1.6);
@@ -418,11 +571,22 @@ public:
         revLen = (int) (sr * 0.8);
     }
 
+    void deactivate()
+    {
+        if (! active) return;
+        active = false;
+        reverb.reset();
+        dark.reset();
+        ducker.prepare (sr, 0.28);
+        validPre = validReverse = revPos = 0;
+    }
+
     void process (float* L, float* R, int n, const Settings& s)
     {
         static constexpr float rooms[] = { 0.45f, 0.7f, 0.88f, 0.85f, 0.88f };
         static constexpr float damps[] = { 0.5f, 0.25f, 0.4f, 0.8f, 0.4f };
         const int mode = juce::jlimit (0, 4, s.reverbMode);
+        active = true;
 
         juce::Reverb::Parameters p;
         p.roomSize = juce::jlimit (0.0f, 1.0f, rooms[mode] + (s.reverbSize - 0.5f) * 0.24f);
@@ -440,8 +604,9 @@ public:
             pre[1][(size_t) preWrite] = R[i];
             int r = preWrite - pd;
             if (r < 0) r += preSize;
-            wetL[i] = pre[0][(size_t) r];
-            wetR[i] = pre[1][(size_t) r];
+            wetL[i] = validPre >= pd ? pre[0][(size_t) r] : 0.0f;
+            wetR[i] = validPre >= pd ? pre[1][(size_t) r] : 0.0f;
+            validPre = std::min (preSize, validPre + 1);
             if (++preWrite >= preSize) preWrite = 0;
         }
 
@@ -452,9 +617,16 @@ public:
 
         if (mode == 4)
             reverse (n, s.reverbSize);
+        else
+            revPos = validReverse = 0;
 
         const float wet = s.reverbMix * s.space;
-        for (int i = 0; i < n; ++i) { L[i] += wetL[i] * wet; R[i] += wetR[i] * wet; }
+        for (int i = 0; i < n; ++i)
+        {
+            const float returnGain = wet * ducker.gain (L[i], R[i], s.reverbDuck);
+            L[i] += wetL[i] * returnGain;
+            R[i] += wetR[i] * returnGain;
+        }
     }
 
 private:
@@ -468,13 +640,14 @@ private:
             rec[1][(size_t) revPos] = wetR[i];
             const auto back = (size_t) (revLen - 1 - revPos);
             const float env = ((float) revPos / (float) revLen) * juce::jmin (1.0f, (float) (revLen - revPos) / (float) fade);
-            wetL[i] = play[0][back] * env * 1.5f;
-            wetR[i] = play[1][back] * env * 1.5f;
+            wetL[i] = back < (size_t) validReverse ? play[0][back] * env * 1.5f : 0.0f;
+            wetR[i] = back < (size_t) validReverse ? play[1][back] * env * 1.5f : 0.0f;
 
             if (++revPos >= revLen)
             {
                 std::swap (rec[0], play[0]);
                 std::swap (rec[1], play[1]);
+                validReverse = revLen;
                 revPos = 0;
                 revLen = juce::jlimit (1, (int) rec[0].size(), (int) (sr * (0.3 + size * 1.2)));
             }
@@ -483,8 +656,10 @@ private:
 
     double sr = 44100.0;
     juce::Reverb reverb;
+    ReturnDucker ducker;
     std::vector<float> pre[2], rec[2], play[2];
-    int preWrite = 0, revPos = 0, revLen = 1;
+    int preWrite = 0, revPos = 0, revLen = 1, validPre = 0, validReverse = 0;
+    bool active = false;
     SVF dark;
     float wetL[maxBlock] {}, wetR[maxBlock] {};
 };
@@ -500,8 +675,16 @@ public:
         pitch.prepare (sampleRate);
         color.prepare (sampleRate);
         mod.prepare (sampleRate);
+        flange.prepare (sampleRate);
         delay.prepare (sampleRate);
         space.prepare (sampleRate);
+    }
+
+    void discardTails()
+    {
+        flange.deactivate();
+        delay.deactivate();
+        space.deactivate();
     }
 
     void process (float* L, float* R, int numSamples, const Settings& s)
@@ -517,8 +700,9 @@ public:
             if (s.pitchOn)  pitch.process (l, r, n, s);
             if (s.colorOn)  color.process (l, r, n, s);
             if (s.modOn)    mod.process (l, r, n, s);
-            if (s.delayOn)  delay.process (l, r, n, s);
-            if (s.reverbOn) space.process (l, r, n, s);
+            flange.process (l, r, n, s);
+            if (s.delayOn)  delay.process (l, r, n, s); else delay.deactivate();
+            if (s.reverbOn) space.process (l, r, n, s); else space.deactivate();
 
             // WIDTH macro: 0 = mono, 0.5 = untouched, 1 = twice as wide
             const float side = s.width * 2.0f;
@@ -538,6 +722,7 @@ private:
     Pitch pitch;
     Color color;
     Mod mod;
+    Flange flange;
     Delay delay;
     Space space;
 };

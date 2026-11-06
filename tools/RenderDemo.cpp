@@ -39,6 +39,14 @@ void apply (AdLib::Settings& s, const juce::String& id, float v)
     else if (id == "mod_depth") s.modDepth = v;
     else if (id == "mod_rate") s.modRate = v;
     else if (id == "mod_mix") s.modMix = v;
+    else if (id == "delay_duck")     s.delayDuck = v;
+    else if (id == "reverb_duck")    s.reverbDuck = v;
+    else if (id == "flange_on")      s.flangeOn = on;
+    else if (id == "flange_mode")    s.flangeMode = mode;
+    else if (id == "flange_mix")     s.flangeMix = v;
+    else if (id == "flange_depth")   s.flangeDepth = v;
+    else if (id == "flange_rate")    s.flangeRate = v;
+    else if (id == "flange_feedback") s.flangeFeedback = v;
     else if (id == "delay_on") s.delayOn = on;
     else if (id == "delay_mode") s.delayMode = mode;
     else if (id == "delay_feedback") s.delayFeedback = v;

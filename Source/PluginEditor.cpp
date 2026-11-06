@@ -1,738 +1,512 @@
 #include "PluginEditor.h"
 #include "Presets.h"
 
+using namespace juce;
+using namespace SwellColours;
+
 namespace
 {
-juce::String utf8 (const char* s) { return juce::String::fromUTF8 (s); }
+constexpr int mainWidth = 800, mainHeight = 390;
+const Colour accents[]{Colour (0xff91b9e1), Colour (0xffbda5e2), Colour (0xffe9ae7d), Colour (0xff8cc7bd)};
+constexpr int quickStart = 5;
+const EffectSpec groups[]{
+    {"Macros voix",
+     nullptr,
+     nullptr,
+     {{{"Espace", "space"}, {"Saturation", "dirt"}, {"Pitch", "pitch"}, {"Largeur", "width"}}}},
+    {"Filtre",
+     "clean_on",
+     "clean_mode",
+     {{{"Coupe-bas", "clean_low"}, {"Coupe-haut", "clean_high"}, {"De-esser", "clean_deess"}, {}}}},
+    {"Compression",
+     "punch_on",
+     "punch_mode",
+     {{{"Intensité", "punch_amount"}, {"Attaque", "punch_attack"}, {"Gain", "punch_makeup"}, {}}}},
+    {"Pitch", "pitch_on", nullptr, {{{"Demi-tons", "pitch"}, {"Accord fin", "pitch_fine"}, {"Mix", "pitch_mix"}, {}}}},
+    {"Couleur", "color_on", "color_mode", {{{"Drive", "dirt"}, {"Tonalité", "color_tone"}, {"Mix", "color_mix"}, {}}}},
+    {"Modulation", "mod_on", "mod_mode", {{{"Profondeur", "mod_depth"}, {"Vitesse", "mod_rate"}, {"Mix", "mod_mix"}, {}}}},
+    {"Flange",
+     "flange_on",
+     "flange_mode",
+     {{{"Profondeur", "flange_depth"},
+       {"Vitesse", "flange_rate"},
+       {"Feedback", "flange_feedback"},
+       {"Mix", "flange_mix"}}}},
+    {"Delay",
+     "delay_on",
+     "delay_mode",
+     {{{"Feedback", "delay_feedback"}, {"Tonalité", "delay_tone"}, {"Mix", "delay_mix"}, {"Ducking", "delay_duck"}}}},
+    {"Reverb",
+     "reverb_on",
+     "reverb_mode",
+     {{{"Taille", "reverb_size"}, {"Pré-delay", "reverb_predelay"}, {"Mix", "reverb_mix"}, {"Ducking", "reverb_duck"}}}}};
+const char* const quickMix[]{"mod_mix", "flange_mix", "delay_mix", "reverb_mix"};
 
-struct ModuleInfo
+float value (SwellAdLibProcessor& proc, const char* id)
 {
-    const char* name;
-    const char* hint;
-    const char* onId;
-    const char* modeId;  // nullptr: PITCH, whose modes set the semitones
-    const char* params[3];
-    const char* labels[3];
-    const char* icon;    // SVG path in a 28 x 28 box
-};
+    return proc.apvts.getRawParameterValue (id)->load();
+}
 
-const ModuleInfo modules[] = {
-    { "CLEAN", "filtres + de-esser", "clean_on", "clean_mode",
-      { "clean_low", "clean_high", "clean_deess" }, { "Coupe basses", "Coupe aigus", "De-esser" },
-      "M3 22c5 0 6-13 11-13h11 M3 25h22" },
-    { "PUNCH", "compresseur", "punch_on", "punch_mode",
-      { "punch_amount", "punch_attack", "punch_makeup" }, { "Quantit\xc3\xa9", "Attaque", "Volume" },
-      "M14 2v8M10 6l4 4 4-4 M14 26v-8M10 22l4-4 4 4 M4 14h20" },
-    { "PITCH", "octave et transposition", "pitch_on", nullptr,
-      { "pitch", "pitch_mix", "pitch_fine" }, { "Transposition", "Mix", "Fin" },
-      "M8 23V5M4 9l4-4 4 4 M20 5v18M16 19l4 4 4-4" },
-    { "COLOR", "saturation et effets de caract\xc3\xa8" "re", "color_on", "color_mode",
-      { "dirt", "color_tone", "color_mix" }, { "Drive (Dirt)", "Tone", "Mix" },
-      "M2 14h3l2-7h5l2 14h5l2-7h5" },
-    { "MOD", "\xc3\xa9" "paisseur et largeur", "mod_on", "mod_mode",
-      { "mod_depth", "mod_rate", "mod_mix" }, { "Profondeur", "Vitesse", "Mix" },
-      "M2 12c3-6 6-6 9 0s6 6 9 0 4-4 6-2 M2 18c3-6 6-6 9 0s6 6 9 0 4-4 6-2" },
-    { "DELAY", "\xc3\xa9" "cho cal\xc3\xa9 sur le tempo", "delay_on", "delay_mode",
-      { "delay_feedback", "delay_tone", "delay_mix" }, { "Feedback", "Tone", "Mix" },
-      "M4 5v18 M11 8v12 M18 11v6 M24 13v2" },
-    { "REVERB", "espace", "reverb_on", "reverb_mode",
-      { "reverb_size", "reverb_predelay", "reverb_mix" }, { "Taille", "Pre-delay", "Mix" },
-      "M3.5 23a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0 M5 16a7 7 0 0 1 7 7 M5 10a13 13 0 0 1 13 13 M5 4a19 19 0 0 1 19 19" },
-};
-
-const int pitchSteps[] = { -12, -7, 7, 12 };
-
-bool paramOn (SwellAdLibProcessor& p, const char* id) { return p.apvts.getRawParameterValue (id)->load() > 0.5f; }
-
-void setParam (SwellAdLibProcessor& p, const char* id, float realValue)
+void setValue (SwellAdLibProcessor& proc, const char* id, float real)
 {
-    if (auto* rp = p.apvts.getParameter (id))
+    if (auto* param = proc.apvts.getParameter (id))
     {
-        rp->beginChangeGesture();
-        rp->setValueNotifyingHost (rp->convertTo0to1 (realValue));
-        rp->endChangeGesture();
+        param->beginChangeGesture();
+        param->setValueNotifyingHost (param->convertTo0to1 (real));
+        param->endChangeGesture();
     }
 }
 
-void drawSectionLabel (juce::Graphics& g, const juce::String& text, juce::Rectangle<int> r)
+void enableEffect (SwellAdLibProcessor& proc, int index)
 {
-    g.setColour (SwellColours::dim);
-    g.setFont (swellFont (11.0f, true));
-    g.drawText (text, r, juce::Justification::centredLeft);
+    if (const char* id = groups[index].power; id && value (proc, id) < 0.5f)
+        setValue (proc, id, 1);
+    // Delay and reverb also share the original SPACE master.
+    if ((index == 7 || index == 8) && value (proc, "space") == 0.0f)
+        setValue (proc, "space", 1);
+}
+
+void setModes (ComboBox& box, SwellAdLibProcessor& proc, const char* id)
+{
+    box.clear (dontSendNotification);
+    if (id)
+        box.addItemList (proc.apvts.getParameter (id)->getAllValueStrings(), 1);
+}
+
+void refreshPower (TextButton& power, bool on)
+{
+    const String name = on ? "On" : "Off";
+    if (power.getButtonText() != name)
+        power.setButtonText (name);
+    power.setToggleState (on, dontSendNotification);
+}
+
+void caption (Graphics& g, const String& s, Rectangle<int> r)
+{
+    g.setColour (dim);
+    g.setFont (swellFont (11.5f, true));
+    g.drawText (s, r, Justification::centredLeft);
 }
 } // namespace
 
-//==============================================================================
-void LiveDisplay::paint (juce::Graphics& g)
+ParameterKnob::ParameterKnob (SwellAdLibProcessor& p) : proc (p)
 {
-    using namespace SwellColours;
-    const auto r = getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (well);
-    g.fillRoundedRectangle (r, 12.0f);
-    g.setColour (border);
-    g.drawRoundedRectangle (r, 12.0f, 1.0f);
-
-    constexpr int bars = 96;
-    const float barW = 4.0f, gap = 2.5f;
-    const float total = bars * barW + (bars - 1) * gap;
-    float x = r.getCentreX() - total * 0.5f;
-    const float cy = r.getCentreY() + 6.0f;
-    const int newest = proc.waveWrite.load();
-
-    for (int k = 0; k < bars; ++k)
-    {
-        const int idx = (newest - bars + k + SwellAdLibProcessor::waveSize * 2) % SwellAdLibProcessor::waveSize;
-        const float v = juce::jlimit (0.0f, 1.0f, std::sqrt (proc.wave[(size_t) idx].load()));
-        const float h = 4.0f + v * (r.getHeight() - 30.0f);
-        g.setColour (k % 2 == 0 ? orange : juce::Colour (0xffb8622c));
-        g.fillRoundedRectangle (x, cy - h * 0.5f, barW, h, 2.0f);
-        x += barW + gap;
-    }
-
-    g.setColour (orange);
-    g.fillEllipse (14.0f, 12.0f, 6.0f, 6.0f);
-    g.setColour (text);
-    g.setFont (swellFont (10.0f, true));
-    g.drawText ("LIVE", 26, 8, 60, 14, juce::Justification::centredLeft);
+    dial.setSliderStyle (Slider::RotaryHorizontalVerticalDrag);
+    dial.setTextBoxStyle (Slider::NoTextBox, false, 0, 0);
+    dial.setRotaryParameters (MathConstants<float>::pi * 1.24f, MathConstants<float>::pi * 2.76f, true);
+    dial.setMouseDragSensitivity (185);
+    dial.onValueChange = [this] { repaint(); };
+    addAndMakeVisible (dial);
 }
 
-//==============================================================================
-namespace
+void ParameterKnob::bind (const ControlSpec& spec, Colour colour, std::function<void()> enable)
 {
-const char* const macroIds[]   = { "space", "dirt", "pitch", "width" };
-const char* const macroNames[] = { "SPACE", "DIRT", "PITCH", "WIDTH" };
-const char* const macroHints[] = { "reverb + delay", "saturation (Color)", "octave - / + (Pitch)", "largeur st\xc3\xa9r\xc3\xa9o" };
-} // namespace
-
-MacroPanel::MacroPanel (SwellAdLibProcessor& p) : proc (p)
-{
-    for (int i = 0; i < 4; ++i)
-    {
-        auto& k = knobs[i];
-        k.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        k.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-        k.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
-        k.setMouseDragSensitivity (220);
-        k.onValueChange = [this] { repaint(); };
-        k.onDragStart = [this, i] { ensureModuleOn (i); };
-        addAndMakeVisible (k);
-        attachments[i] = std::make_unique<SliderAttachment> (proc.apvts, macroIds[i], k);
-    }
-}
-
-// Moving a macro whose effect is off switches that effect on, so the knob always does something
-void MacroPanel::ensureModuleOn (int macro)
-{
-    if (macro == 0 && ! paramOn (proc, "delay_on") && ! paramOn (proc, "reverb_on")) setParam (proc, "reverb_on", 1.0f);
-    if (macro == 1 && ! paramOn (proc, "color_on")) setParam (proc, "color_on", 1.0f);
-    if (macro == 2 && ! paramOn (proc, "pitch_on")) setParam (proc, "pitch_on", 1.0f);
-}
-
-juce::Rectangle<int> MacroPanel::card (int i) const
-{
-    const int gap = 14;
-    const int w = (getWidth() - gap * 3) / 4;
-    return { i * (w + gap), 0, w, getHeight() };
-}
-
-void MacroPanel::resized()
-{
-    for (int i = 0; i < 4; ++i)
-        knobs[i].setBounds (juce::Rectangle<int> (124, 124).withCentre ({ card (i).getCentreX(), 108 }));
-}
-
-void MacroPanel::paint (juce::Graphics& g)
-{
-    using namespace SwellColours;
-    for (int i = 0; i < 4; ++i)
-    {
-        const auto c = card (i);
-        g.setColour (panel);
-        g.fillRoundedRectangle (c.toFloat().reduced (0.5f), 14.0f);
-        g.setColour (border);
-        g.drawRoundedRectangle (c.toFloat().reduced (0.5f), 14.0f, 1.0f);
-
-        g.setColour (text);
-        g.setFont (swellFont (14.0f, true));
-        g.drawText (macroNames[i], c.withY (16).withHeight (20), juce::Justification::centred);
-
-        g.setColour (orange);
-        g.setFont (swellFont (19.0f, true));
-        g.drawText (knobs[i].getTextFromValue (knobs[i].getValue()), c.withY (180).withHeight (24), juce::Justification::centred);
-
-        g.setColour (dim);
-        g.setFont (swellFont (11.5f));
-        g.drawText (utf8 (macroHints[i]), c.withY (212).withHeight (18), juce::Justification::centred);
-    }
-}
-
-//==============================================================================
-ModuleButton::ModuleButton (const juce::String& n, const juce::String& svgIcon)
-    : name (n), icon (juce::Drawable::parseSVGPath (svgIcon))
-{
-    setMouseCursor (juce::MouseCursor::PointingHandCursor);
-}
-
-void ModuleButton::setState (bool isOn, bool isSelected)
-{
-    if (isOn == on && isSelected == selected)
-        return;
-    on = isOn;
-    selected = isSelected;
+    attachment.reset();
+    label = String::fromUTF8 (spec.name);
+    ink = colour;
+    dial.setName (label.isNotEmpty() ? label : proc.apvts.getParameter (spec.parameter)->getName (60));
+    dial.setTooltip (dial.getName());
+    dial.setColour (Slider::rotarySliderFillColourId, ink);
+    dial.onDragStart = std::move (enable);
+    attachment = std::make_unique<SliderAttachment> (proc.apvts, spec.parameter, dial);
     repaint();
 }
 
-void ModuleButton::mouseUp (const juce::MouseEvent& e)
+void ParameterKnob::resized()
 {
-    if (e.mouseWasClicked() && onClick)
-        onClick();
+    auto r = getLocalBounds().withTrimmedTop (label.isEmpty() ? 5 : 16).withTrimmedBottom (20);
+    int size = jmin (r.getWidth(), r.getHeight());
+    dial.setBounds (r.withSizeKeepingCentre (size, size));
 }
 
-void ModuleButton::paint (juce::Graphics& g)
+void ParameterKnob::paint (Graphics& g)
 {
-    using namespace SwellColours;
-    const auto r = getLocalBounds().toFloat().reduced (1.0f);
+    g.setFont (swellFont (12.0f));
+    g.setColour (dim);
+    if (label.isNotEmpty())
+        g.drawText (label, getLocalBounds().removeFromTop (16), Justification::centred);
+    g.setColour (ink);
+    g.setFont (swellFont (15.0f, true));
+    g.drawText (dial.getTextFromValue (dial.getValue()), getLocalBounds().removeFromBottom (20), Justification::centred);
+}
 
-    if (on)
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff2a2420), 0.0f, r.getY(), juce::Colour (0xff201d1b), 0.0f, r.getBottom(), false));
-    else
-        g.setColour (juce::Colour (0xff1c1c20));
-    g.fillRoundedRectangle (r, 12.0f);
-
-    if (isMouseOver())
+EffectStrip::EffectStrip (SwellAdLibProcessor& p, int effect) : proc (p), index (effect), amount (p)
+{
+    const auto& spec = groups[index];
+    power.setName (String (spec.name) + " On/Off");
+    power.onClick = [this]
     {
-        g.setColour (juce::Colours::white.withAlpha (0.04f));
-        g.fillRoundedRectangle (r, 12.0f);
-    }
-
-    g.setColour (selected ? orange : on ? orangeDeep : border);
-    g.drawRoundedRectangle (r, 12.0f, selected ? 2.0f : 1.0f);
-
-    g.setColour (on ? orange : juce::Colour (0xff3a3a41));
-    g.fillEllipse (r.getRight() - 15.0f, r.getY() + 8.0f, 7.0f, 7.0f);
-
-    const float size = 30.0f;
-    const auto iconArea = juce::Rectangle<float> (size, size).withCentre ({ r.getCentreX(), r.getCentreY() - 10.0f });
-    auto p = icon;
-    p.applyTransform (juce::AffineTransform::scale (size / 28.0f).translated (iconArea.getX(), iconArea.getY()));
-    g.setColour (on ? orange : juce::Colour (0xff6c6c75));
-    g.strokePath (p, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-    g.setColour (on || selected ? text : dim);
-    g.setFont (swellFont (12.0f, true));
-    g.drawText (name, r.withTop (r.getCentreY() + 14.0f).withHeight (18.0f), juce::Justification::centred);
-}
-
-//==============================================================================
-ModulePanel::ModulePanel (SwellAdLibProcessor& p) : proc (p)
-{
-    back.onClick = [this] { if (onBack) onBack(); };
-    addAndMakeVisible (back);
-
-    power.setClickingTogglesState (true);
+        if (value (proc, groups[index].power) > 0.5f)
+            setValue (proc, groups[index].power, 0);
+        else
+            enableEffect (proc, index);
+        refresh();
+    };
+    setModes (mode, proc, spec.mode);
+    mode.setName (String (spec.name) + " Mode");
+    mode.onChange = [this]
+    {
+        setValue (proc, groups[index].mode, (float)mode.getSelectedItemIndex());
+        enableEffect (proc, index);
+        refresh();
+    };
+    amount.bind ({"", quickMix[index - quickStart]}, accents[index - quickStart], [this] { enableEffect (proc, index); });
     addAndMakeVisible (power);
-
-    for (auto& s : sliders)
-    {
-        s.setSliderStyle (juce::Slider::LinearHorizontal);
-        s.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-        s.onValueChange = [this] { repaint(); };
-        addAndMakeVisible (s);
-    }
+    addAndMakeVisible (mode);
+    addAndMakeVisible (amount);
+    refresh();
 }
 
-void ModulePanel::setModule (int index)
+void EffectStrip::refresh()
 {
-    module = index;
-    const auto& info = modules[index];
-
-    powerAtt.reset();
-    powerAtt = std::make_unique<ButtonAttachment> (proc.apvts, info.onId, power);
-
-    for (int k = 0; k < 3; ++k)
+    bool on = value (proc, groups[index].power) > 0.5f;
+    if (on != active)
     {
-        sliderAtt[k].reset();
-        sliderAtt[k] = std::make_unique<SliderAttachment> (proc.apvts, info.params[k], sliders[k]);
+        active = on;
+        repaint();
     }
+    amount.setAlpha (on ? 1.0f : 0.65f);
+    refreshPower (power, on);
+    mode.setSelectedId (1 + roundToInt (value (proc, groups[index].mode)), dontSendNotification);
+}
 
-    modeButtons.clear();
-    juce::StringArray names;
-    if (info.modeId != nullptr)
-        names = proc.apvts.getParameter (info.modeId)->getAllValueStrings();
-    else
-        names = { "-12 st", "-7 st", "+7 st", "+12 st", "Libre" };
+void EffectStrip::resized()
+{
+    power.setBounds (getWidth() - 49, 10, 40, 23);
+    mode.setBounds (10, 43, getWidth() - 20, 27);
+    amount.setBounds (10, 82, getWidth() - 20, getHeight() - 91);
+}
 
-    for (int k = 0; k < names.size(); ++k)
+void EffectStrip::paint (Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (panel);
+    g.fillRoundedRectangle (r, 8);
+    g.setColour (active ? accents[index - quickStart].withAlpha (0.58f) : border);
+    g.drawRoundedRectangle (r, 8, 1);
+    g.setColour (active ? accents[index - quickStart] : dim);
+    g.setFont (swellFont (15.0f, true));
+    g.drawText (groups[index].name, 11, 10, getWidth() - 65, 23, Justification::centredLeft);
+}
+
+DetailView::DetailView (SwellAdLibProcessor& p) : proc (p)
+{
+    for (int i = 0; i < (int)std::size (groups); ++i)
+        group.addItem (String::fromUTF8 (groups[i].name), i + 1);
+    group.setName ("Section");
+    group.onChange = [this] { select (group.getSelectedItemIndex()); };
+    mode.onChange = [this]
     {
-        auto* b = modeButtons.add (new juce::TextButton (names[k]));
-        b->getProperties().set ("corner", 18.0f);
-        b->onClick = [this, k] { pickMode (k); };
-        addAndMakeVisible (b);
-    }
+        if (groups[selected].mode)
+            setValue (proc, groups[selected].mode, (float)mode.getSelectedItemIndex());
+        else if (selected == 3 && mode.getSelectedId() <= 4)
+        {
+            constexpr int steps[]{-12, -7, 7, 12};
+            setValue (proc, "pitch", (float)steps[mode.getSelectedItemIndex()]);
+        }
+        enableEffect (proc, selected);
+    };
+    power.onClick = [this]
+    {
+        const char* id = groups[selected].power;
+        if (!id)
+            return;
+        if (value (proc, id) > 0.5f)
+            setValue (proc, id, 0);
+        else
+            enableEffect (proc, selected);
+        refresh();
+    };
+    addAndMakeVisible (group);
+    addAndMakeVisible (mode);
+    addAndMakeVisible (power);
+    for (int i = 0; i < 4; ++i)
+        addAndMakeVisible (knobs.add (new ParameterKnob (proc)));
+    select (0);
+}
 
+void DetailView::select (int index)
+{
+    if (!isPositiveAndBelow (index, (int)std::size (groups)))
+        return;
+    selected = index;
+    group.setSelectedId (index + 1, dontSendNotification);
+    const auto& spec = groups[index];
+    setModes (mode, proc, spec.mode);
+    if (index == 3)
+        mode.addItemList ({"-12 st", "-7 st", "+7 st", "+12 st", "Libre"}, 1);
+    mode.setVisible (spec.mode != nullptr || index == 3);
+    power.setVisible (spec.power != nullptr);
+    for (int i = 0; i < knobs.size(); ++i)
+    {
+        const auto& c = spec.controls[(size_t)i];
+        knobs[i]->setVisible (c.parameter != nullptr);
+        if (c.parameter)
+            knobs[i]->bind (c, accentBlue,
+                            [this, i]
+                            {
+                                if (selected != 0)
+                                    enableEffect (proc, selected);
+                                else if (i == 0 && value (proc, "delay_on") < 0.5f && value (proc, "reverb_on") < 0.5f)
+                                    setValue (proc, "reverb_on", 1);
+                                else if (i == 1)
+                                    enableEffect (proc, 4);
+                                else if (i == 2)
+                                    enableEffect (proc, 3);
+                            });
+    }
     refresh();
     resized();
     repaint();
 }
 
-void ModulePanel::pickMode (int k)
+void DetailView::refresh()
 {
-    const auto& info = modules[module];
-    if (info.modeId != nullptr)
-        setParam (proc, info.modeId, (float) k);
-    else if (k < 4)
-        setParam (proc, "pitch", (float) pitchSteps[k]);
-
-    if (! paramOn (proc, info.onId))
-        setParam (proc, info.onId, 1.0f);
-    refresh();
-}
-
-void ModulePanel::refresh()
-{
-    const auto& info = modules[module];
-    int active = 0;
-    if (info.modeId != nullptr)
+    const auto& spec = groups[selected];
+    if (spec.mode)
+        mode.setSelectedId (1 + roundToInt (value (proc, spec.mode)), dontSendNotification);
+    else if (selected == 3)
     {
-        active = juce::roundToInt (proc.apvts.getRawParameterValue (info.modeId)->load());
-    }
-    else
-    {
-        const int st = juce::roundToInt (proc.apvts.getRawParameterValue ("pitch")->load());
-        active = 4;
+        int pitch = roundToInt (value (proc, "pitch"));
+        constexpr int shortcut[] = {-12, -7, 7, 12};
+        int id = 5;
         for (int k = 0; k < 4; ++k)
-            if (pitchSteps[k] == st) active = k;
+            if (shortcut[k] == pitch)
+                id = k + 1;
+        mode.setSelectedId (id, dontSendNotification);
     }
-
-    for (int k = 0; k < modeButtons.size(); ++k)
-        modeButtons[k]->setToggleState (k == active, juce::dontSendNotification);
-
-    power.setButtonText (power.getToggleState() ? "ON" : "OFF");
+    if (spec.power)
+        refreshPower (power, value (proc, spec.power) > 0.5f);
 }
 
-void ModulePanel::resized()
+void DetailView::resized()
 {
-    back.setBounds (22, 18, 100, 36);
-    power.setBounds (getWidth() - 22 - 80, 18, 80, 36);
-
-    int x = 22;
-    for (auto* b : modeButtons)
-    {
-        const int w = juce::roundToInt (juce::GlyphArrangement::getStringWidth (swellFont (13.0f, true), b->getButtonText())) + 30;
-        b->setBounds (x, 96, w, 36);
-        x += w + 6;
-    }
-
-    const int colW = (getWidth() - 44 - 48) / 3;
-    for (int k = 0; k < 3; ++k)
-        sliders[k].setBounds (22 + k * (colW + 24), 196, colW, 26);
-}
-
-void ModulePanel::paint (juce::Graphics& g)
-{
-    using namespace SwellColours;
-    const auto r = getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (panel);
-    g.fillRoundedRectangle (r, 14.0f);
-    g.setColour (orangeDeep);
-    g.drawRoundedRectangle (r, 14.0f, 1.0f);
-
-    const auto& info = modules[module];
-    g.setColour (text);
-    g.setFont (swellFont (20.0f, true));
-    g.drawText (info.name, 138, 18, 120, 36, juce::Justification::centredLeft);
-    g.setColour (dim);
-    g.setFont (swellFont (12.0f));
-    g.drawText (utf8 (info.hint), 250, 18, 300, 36, juce::Justification::centredLeft);
-
-    drawSectionLabel (g, "MODE", { 22, 72, 200, 16 });
-
-    const int colW = (getWidth() - 44 - 48) / 3;
-    for (int k = 0; k < 3; ++k)
-    {
-        const juce::Rectangle<int> row (22 + k * (colW + 24), 172, colW, 18);
-        g.setColour (dim);
-        g.setFont (swellFont (12.0f));
-        g.drawText (utf8 (info.labels[k]), row, juce::Justification::centredLeft);
-        g.setColour (orange);
-        g.setFont (swellFont (13.0f, true));
-        g.drawText (sliders[k].getTextFromValue (sliders[k].getValue()), row, juce::Justification::centredRight);
-    }
-}
-
-//==============================================================================
-void PresetList::setCategory (const juce::String& cat)
-{
-    items.clear();
-    const auto& list = Presets::all();
-    for (int i = 0; i < (int) list.size(); ++i)
-        if (cat == list[(size_t) i].category)
-            items.push_back (i);
-    repaint();
-}
-
-void PresetList::paint (juce::Graphics& g)
-{
-    using namespace SwellColours;
-    const auto& list = Presets::all();
-    const int current = proc.getCurrentPreset();
-
-    for (int row = 0; row < (int) items.size(); ++row)
-    {
-        const auto r = juce::Rectangle<int> (0, row * (rowH + 4), getWidth(), rowH).toFloat();
-        const bool sel = items[(size_t) row] == current;
-        if (sel || row == hover)
-        {
-            g.setColour (sel ? juce::Colour (0xff2e2620) : control);
-            g.fillRoundedRectangle (r, 8.0f);
-        }
-        g.setColour (sel ? orange : text);
-        g.setFont (swellFont (14.0f, sel));
-        g.drawText (list[(size_t) items[(size_t) row]].name, r.reduced (12.0f, 0.0f), juce::Justification::centredLeft);
-        if (sel)
-        {
-            g.setColour (orange);
-            g.fillEllipse (r.getRight() - 18.0f, r.getCentreY() - 3.0f, 6.0f, 6.0f);
-        }
-    }
-}
-
-void PresetList::mouseMove (const juce::MouseEvent& e)
-{
-    const int row = e.y / (rowH + 4);
-    const int h = row < (int) items.size() ? row : -1;
-    if (h != hover) { hover = h; repaint(); }
-}
-
-void PresetList::mouseUp (const juce::MouseEvent& e)
-{
-    const int row = e.y / (rowH + 4);
-    if (e.mouseWasClicked() && juce::isPositiveAndBelow (row, (int) items.size()))
-    {
-        proc.loadPreset (items[(size_t) row]);
-        repaint();
-    }
-}
-
-//==============================================================================
-void PresetDisplay::paint (juce::Graphics& g)
-{
-    using namespace SwellColours;
-    const auto& p = Presets::all()[(size_t) proc.getCurrentPreset()];
-    g.setColour (dim);
-    g.setFont (swellFont (10.5f, true));
-    g.drawText (juce::String (p.category).toUpperCase(), getLocalBounds().withHeight (16).withY (3), juce::Justification::centred);
-    g.setColour (text);
-    g.setFont (swellFont (17.0f, true));
-    g.drawText (p.name, getLocalBounds().withTop (17).withHeight (22), juce::Justification::centred);
-}
-
-void PresetDisplay::mouseUp (const juce::MouseEvent& e)
-{
-    if (! e.mouseWasClicked())
+    group.setBounds (15, 13, 185, 29);
+    mode.setBounds (214, 13, 159, 29);
+    power.setBounds (getWidth() - 70, 13, 55, 29);
+    int count = 0;
+    for (auto* k : knobs)
+        if (k->isVisible())
+            ++count;
+    if (count == 0)
         return;
-
-    juce::PopupMenu menu;
-    const auto& list = Presets::all();
-    for (auto* cat : Presets::categories)
-    {
-        menu.addSectionHeader (juce::String (cat).toUpperCase());
-        for (int i = 0; i < (int) list.size(); ++i)
-            if (juce::String (cat) == list[(size_t) i].category)
-                menu.addItem (i + 1, list[(size_t) i].name, true, i == proc.getCurrentPreset());
-    }
-
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
-                        [this] (int result) { if (result > 0 && onPick) onPick (result - 1); });
+    const int w = (getWidth() - 24) / count;
+    for (int i = 0; i < count; ++i)
+        knobs[i]->setBounds (12 + i * w, 57, w, getHeight() - 67);
 }
 
-//==============================================================================
-void ThrowButton::paintButton (juce::Graphics& g, bool over, bool)
+void DetailView::paint (Graphics& g)
 {
-    using namespace SwellColours;
-    const auto r = getLocalBounds().toFloat().reduced (1.0f);
-    const bool on = getToggleState();
-    g.setColour (on ? orange : (over ? orange.withAlpha (0.08f) : juce::Colours::transparentBlack));
-    g.fillRoundedRectangle (r, 12.0f);
-    g.setColour (orange);
-    g.drawRoundedRectangle (r, 12.0f, 2.0f);
-
-    g.setColour (on ? background : orange);
-    g.setFont (swellFont (18.0f, true));
-    g.drawText ("THROW", r.withHeight (r.getHeight() * 0.62f), juce::Justification::centredBottom);
-    g.setFont (swellFont (10.0f));
-    g.drawText ("delay fin de mot", r.withTop (r.getY() + r.getHeight() * 0.6f), juce::Justification::centredTop);
-}
-
-void Meter::paint (juce::Graphics& g)
-{
-    using namespace SwellColours;
-    const auto r = getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (well);
-    g.fillRoundedRectangle (r, 6.0f);
+    auto r = getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (panel);
+    g.fillRoundedRectangle (r, 8);
     g.setColour (border);
-    g.drawRoundedRectangle (r, 6.0f, 1.0f);
-
-    const float db = juce::Decibels::gainToDecibels (level, -60.0f);
-    const float h = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f) * (r.getHeight() - 2.0f);
-    const auto bar = r.reduced (1.0f).withTop (r.getBottom() - 1.0f - h);
-    g.setGradientFill (juce::ColourGradient (orange, 0.0f, r.getBottom(), juce::Colour (0xffffd27a), 0.0f, r.getY(), false));
-    g.fillRoundedRectangle (bar, 5.0f);
+    g.drawRoundedRectangle (r, 8, 1);
 }
 
-//==============================================================================
-SwellAdLibEditor::SwellAdLibEditor (SwellAdLibProcessor& p)
-    : AudioProcessorEditor (&p), proc (p), presetDisplay (p), presetList (p),
-      live (p), macros (p), modulePanel (p)
+SwellAdLibEditor::SwellAdLibEditor (SwellAdLibProcessor& p) : AudioProcessorEditor (&p), proc (p), detail (p)
 {
     setLookAndFeel (&lnf);
-
-    // Header
-    prevButton.onClick = [this] { const int n = (int) Presets::all().size(); proc.loadPreset ((proc.getCurrentPreset() + n - 1) % n); };
-    nextButton.onClick = [this] { proc.loadPreset ((proc.getCurrentPreset() + 1) % (int) Presets::all().size()); };
-    presetDisplay.onPick = [this] (int i) { proc.loadPreset (i); };
-    presetDisplay.setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    abButton.onClick = [this] { proc.toggleAB(); };
-    abButton.setTooltip ("Compare deux reglages (A / B)");
-    bypassButton.setClickingTogglesState (true);
-    bypassAtt = std::make_unique<ButtonAttachment> (proc.apvts, "bypass", bypassButton);
-    for (auto* c : std::initializer_list<juce::Component*> { &prevButton, &nextButton, &presetDisplay, &abButton, &bypassButton })
-        addAndMakeVisible (c);
-
-    // Preset browser
-    for (auto* cat : Presets::categories)
+    const auto& bank = Presets::all();
+    for (auto* category : Presets::categories)
     {
-        auto* b = categoryButtons.add (new juce::TextButton (cat));
-        b->onClick = [this, name = juce::String (cat)] { selectCategory (name); };
-        addAndMakeVisible (b);
+        PopupMenu list;
+        for (int i = 0; i < (int)bank.size(); ++i)
+            if (String (bank[(size_t)i].category) == category)
+                list.addItem (i + 1, bank[(size_t)i].name);
+        presets.getRootMenu()->addSubMenu (category, list);
     }
-    addAndMakeVisible (presetList);
-
-    // Center
-    addAndMakeVisible (live);
-    addAndMakeVisible (macros);
-    addChildComponent (modulePanel);
-    modulePanel.onBack = [this] { selectModule (-1); };
-    for (int i = 0; i < 7; ++i)
+    presets.setName ("Preset");
+    presets.onChange = [this]
     {
-        auto* b = moduleButtons.add (new ModuleButton (modules[i].name, modules[i].icon));
-        b->onClick = [this, i] { selectModule (selected == i ? -1 : i); };
-        addAndMakeVisible (b);
-    }
-
-    // Output
-    throwAtt = std::make_unique<ButtonAttachment> (proc.apvts, "throw", throwButton);
-    throwButton.setTooltip ("Le delay ne part que sur la fin des mots");
-    addAndMakeVisible (throwButton);
-    addAndMakeVisible (meterL);
-    addAndMakeVisible (meterR);
-    for (auto* s : { &mixSlider, &gainSlider })
+        if (presets.getSelectedId() > 0)
+            proc.loadPreset (presets.getSelectedId() - 1);
+        refresh();
+    };
+    auto step = [this] (int delta)
     {
-        s->setSliderStyle (juce::Slider::LinearHorizontal);
-        s->setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-        s->onValueChange = [this] { repaint (952, 430, 168, 140); };
-        addAndMakeVisible (s);
+        int n = (int)Presets::all().size();
+        proc.loadPreset ((proc.getCurrentPreset() + delta + n) % n);
+        refresh();
+    };
+    previous.onClick = [step] { step (-1); };
+    next.onClick = [step] { step (1); };
+    previous.setTooltip ("Preset précédent");
+    next.setTooltip ("Preset suivant");
+    compare.onClick = [this]
+    {
+        proc.toggleAB();
+        refresh();
+    };
+    compare.setTooltip ("Comparer deux réglages");
+    bypass.onClick = [this]
+    {
+        setValue (proc, "bypass", value (proc, "bypass") < 0.5f ? 1.0f : 0.0f);
+        refresh();
+    };
+    zoom.setTooltip ("Taille de la fenêtre");
+    zoom.onClick = [this] { zoomMenu(); };
+    detailsButton.onClick = [this] { showDetails (!detailsShown); };
+    throwButton.setTooltip ("Répéter seulement la dernière syllabe, au tempo du projet");
+    throwButton.onClick = [this]
+    {
+        const bool turnOn = value (proc, "throw") < 0.5f;
+        if (turnOn)
+            enableEffect (proc, 7);
+        setValue (proc, "throw", turnOn ? 1.0f : 0.0f);
+        refresh();
+    };
+    for (auto* b : {&previous, &next, &compare, &bypass, &detailsButton, &throwButton, &zoom})
+        addAndMakeVisible (*b);
+    addAndMakeVisible (presets);
+    for (int i = 0; i < 4; ++i)
+        addAndMakeVisible (strips.add (new EffectStrip (proc, quickStart + i)));
+    addChildComponent (detail);
+    for (auto* s : {&mix, &gain})
+    {
+        s->setSliderStyle (Slider::LinearHorizontal);
+        s->setTextBoxStyle (Slider::NoTextBox, false, 0, 0);
+        s->onValueChange = [this] { repaint (175, 320, 425, 65); };
+        addAndMakeVisible (*s);
     }
-    mixAtt = std::make_unique<SliderAttachment> (proc.apvts, "out_mix", mixSlider);
-    gainAtt = std::make_unique<SliderAttachment> (proc.apvts, "out_gain", gainSlider);
-
-    setSize (1120, 720);
-    presetChanged();
-    startTimerHz (30);
+    mix.setName ("Mix global");
+    gain.setName ("Gain de sortie");
+    mixAttachment = std::make_unique<SliderAttachment> (proc.apvts, "out_mix", mix);
+    gainAttachment = std::make_unique<SliderAttachment> (proc.apvts, "out_gain", gain);
+    showDetails (false);
+    setSize (mainWidth, mainHeight);
+    refresh();
+    startTimerHz (24);
 }
 
 SwellAdLibEditor::~SwellAdLibEditor()
 {
+    stopTimer();
     setLookAndFeel (nullptr);
 }
 
-void SwellAdLibEditor::selectCategory (const juce::String& cat)
+void SwellAdLibEditor::showDetails (bool show)
 {
-    category = cat;
-    for (auto* b : categoryButtons)
-        b->setToggleState (b->getButtonText() == cat, juce::dontSendNotification);
-    presetList.setCategory (cat);
+    detailsShown = show;
+    for (auto* strip : strips)
+        strip->setVisible (!show);
+    detail.setVisible (show);
+    detailsButton.setButtonText (show ? String::fromUTF8 ("← Effets") : String::fromUTF8 ("Réglages"));
+    detailsButton.setToggleState (show, dontSendNotification);
+    repaint();
 }
 
-void SwellAdLibEditor::selectModule (int index)
+void SwellAdLibEditor::zoomMenu()
 {
-    selected = index;
-    if (index >= 0)
-        modulePanel.setModule (index);
-    modulePanel.setVisible (index >= 0);
-    macros.setVisible (index < 0);
-    timerCallback();
+    auto* frame = dynamic_cast<AudioProcessorEditor*> (getParentComponent());
+    if (!frame)
+        return;
+    PopupMenu m;
+    for (int percent : {75, 100, 125, 150})
+        m.addItem (percent, String (percent) + " %", true, frame->getWidth() == mainWidth * percent / 100);
+    m.showMenuAsync (PopupMenu::Options().withTargetComponent (&zoom),
+                     [safe = Component::SafePointer<AudioProcessorEditor> (frame)] (int result)
+                     {
+                         if (safe != nullptr && result > 0)
+                             safe->setBoundsConstrained (safe->getBounds().withSizeKeepingCentre (
+                                 mainWidth * result / 100, mainHeight * result / 100));
+                     });
 }
 
-void SwellAdLibEditor::presetChanged()
+void SwellAdLibEditor::refresh()
 {
-    shownPreset = proc.getCurrentPreset();
-    selectCategory (Presets::all()[(size_t) shownPreset].category);
-    presetDisplay.repaint();
-    repaint (0, 64, 236, 626);
+    const int index = proc.getCurrentPreset();
+    if (shownPreset != index)
+    {
+        shownPreset = index;
+        presets.setSelectedId (index + 1, dontSendNotification);
+        repaint();
+    }
+    for (auto* strip : strips)
+        strip->refresh();
+    if (detailsShown)
+        detail.refresh();
+    compare.setButtonText (proc.isOnB() ? "B" : "A");
+    bypass.setToggleState (value (proc, "bypass") > 0.5f, dontSendNotification);
+    throwButton.setToggleState (value (proc, "throw") > 0.5f, dontSendNotification);
+    if (auto* frame = getParentComponent())
+        zoom.setButtonText (String (roundToInt (100.0 * frame->getWidth() / mainWidth)) + "%");
 }
 
 void SwellAdLibEditor::timerCallback()
 {
-    if (proc.getCurrentPreset() != shownPreset)
-        presetChanged();
-
-    for (int i = 0; i < moduleButtons.size(); ++i)
-    {
-        moduleButtons[i]->setState (paramOn (proc, modules[i].onId), i == selected);
-        if (i == selected || moduleButtons[i]->getTooltip().isEmpty())
-            moduleButtons[i]->setTooltip (juce::String (modules[i].name) + " : " + utf8 (modules[i].hint));
-    }
-    if (modulePanel.isVisible())
-        modulePanel.refresh();
-
-    abButton.setButtonText (proc.isOnB() ? "B" : "A");
-
-    const float alpha = paramOn (proc, "bypass") ? 0.35f : 1.0f;
-    for (auto* c : std::initializer_list<juce::Component*> { &presetList, &live, &macros, &modulePanel, &throwButton, &mixSlider, &gainSlider })
-        c->setAlpha (alpha);
-    for (auto* b : moduleButtons) b->setAlpha (alpha);
-
-    // Dev helper for the README pictures: SWELL_SNAPSHOT=<file.png> [SWELL_SNAPSHOT_PRESET=n] [SWELL_SNAPSHOT_MODULE=n]
-    if (! snapshotDone)
-    {
-        snapshotDone = true;
-        const auto file = juce::SystemStats::getEnvironmentVariable ("SWELL_SNAPSHOT", {});
-        if (file.isNotEmpty())
-        {
-            proc.loadPreset (juce::SystemStats::getEnvironmentVariable ("SWELL_SNAPSHOT_PRESET", "0").getIntValue());
-            presetChanged();
-            const int module = juce::SystemStats::getEnvironmentVariable ("SWELL_SNAPSHOT_MODULE", "-1").getIntValue();
-            if (module >= 0)
-                selectModule (module);
-            for (int i = 0; i < SwellAdLibProcessor::waveSize; ++i)
-                proc.wave[(size_t) i].store (0.04f + 0.3f * std::pow (std::abs (std::sin ((float) i * 0.19f) * std::sin ((float) i * 0.047f)), 1.5f));
-            proc.peakL.store (0.5f);
-            proc.peakR.store (0.45f);
-            levelL = levelR = 0.0f;
-
-            juce::Timer::callAfterDelay (300, [this, file]
-            {
-                juce::FileOutputStream out { juce::File (file) };
-                if (out.openedOk())
-                {
-                    out.setPosition (0);
-                    out.truncate();
-                    juce::PNGImageFormat().writeImageToStream (createComponentSnapshot (getLocalBounds(), true, 2.0f), out);
-                }
-                if (auto* app = juce::JUCEApplicationBase::getInstance())
-                    app->systemRequestedQuit();
-            });
-        }
-    }
-
-    levelL = juce::jmax (proc.peakL.exchange (0.0f), levelL * 0.85f);
-    levelR = juce::jmax (proc.peakR.exchange (0.0f), levelR * 0.85f);
-    meterL.setLevel (levelL);
-    meterR.setLevel (levelR);
-    live.repaint();
+    refresh();
+    levels[0] = jmax (levels[0] * 0.84f, proc.peakL.exchange (0.0f));
+    levels[1] = jmax (levels[1] * 0.84f, proc.peakR.exchange (0.0f));
+    repaint (627, 339, 145, 29);
 }
 
 void SwellAdLibEditor::resized()
 {
-    // Header
-    prevButton.setBounds (370, 12, 40, 40);
-    presetDisplay.setBounds (414, 12, 300, 40);
-    nextButton.setBounds (718, 12, 40, 40);
-    bypassButton.setBounds (1020, 12, 80, 40);
-    abButton.setBounds (968, 12, 44, 40);
-
-    // Preset browser
-    for (int i = 0; i < categoryButtons.size(); ++i)
-        categoryButtons[i]->setBounds (16 + (i % 2) * 105, 104 + (i / 2) * 40, 99, 34);
-    presetList.setBounds (16, 196, 204, 380);
-
-    // Center
-    live.setBounds (260, 84, 668, 92);
-    macros.setBounds (260, 194, 668, 262);
-    modulePanel.setBounds (260, 194, 668, 262);
-    const float w = (668.0f - 6 * 8.0f) / 7.0f;
-    for (int i = 0; i < moduleButtons.size(); ++i)
-        moduleButtons[i]->setBounds (juce::roundToInt (260.0f + (float) i * (w + 8.0f)), 500, juce::roundToInt (w), 100);
-
-    // Output
-    throwButton.setBounds (968, 108, 136, 72);
-    meterL.setBounds (1012, 200, 14, 216);
-    meterR.setBounds (1046, 200, 14, 216);
-    mixSlider.setBounds (968, 470, 136, 24);
-    gainSlider.setBounds (968, 530, 136, 24);
+    presets.setBounds (272, 16, 235, 31);
+    previous.setBounds (514, 16, 30, 31);
+    next.setBounds (546, 16, 30, 31);
+    compare.setBounds (596, 16, 33, 31);
+    bypass.setBounds (634, 16, 70, 31);
+    zoom.setBounds (714, 16, 62, 31);
+    detailsButton.setBounds (677, 76, 99, 27);
+    const int gap = 8, w = (mainWidth - 48 - gap * 3) / 4;
+    for (int i = 0; i < strips.size(); ++i)
+        strips[i]->setBounds (24 + i * (w + gap), 112, w, 191);
+    detail.setBounds (24, 112, mainWidth - 48, 191);
+    throwButton.setBounds (24, 333, 115, 33);
+    mix.setBounds (174, 347, 159, 20);
+    gain.setBounds (377, 347, 160, 20);
 }
 
-void SwellAdLibEditor::paint (juce::Graphics& g)
+void SwellAdLibEditor::paint (Graphics& g)
 {
-    using namespace SwellColours;
     g.fillAll (background);
-
-    // Header
-    g.setColour (juce::Colour (0xff1d1d21));
-    g.fillRect (0, 0, 1120, 64);
+    g.setGradientFill (ColourGradient (panelLight, 0, 0, background, (float)getWidth(), 0, false));
+    g.fillRect (0, 0, getWidth(), 61);
     g.setColour (border);
-    g.drawHorizontalLine (64, 0.0f, 1120.0f);
-    drawSwellLogo (g, { 18.0f, 14.0f, 36.0f, 36.0f });
+    g.drawHorizontalLine (61, 0, (float)getWidth());
+    drawSwellLogo (g, {24.0f, 15.0f, 31.0f, 31.0f});
     g.setColour (text);
-    g.setFont (swellFont (18.0f, true));
-    g.drawText ("SWELL", 64, 14, 150, 20, juce::Justification::centredLeft);
-    g.setColour (orange);
+    g.setFont (swellFont (21, true));
+    g.drawText ("Ad-lib FX", 65, 17, 154, 26, Justification::centredLeft);
+    g.setColour (dim);
+    g.setFont (swellFont (10.0f, true));
+    g.drawText ("PRESET", 221, 16, 46, 31, Justification::centredLeft);
+
+    g.setFont (swellFont (18, true));
+    g.setColour (text);
+    g.drawText (detailsShown ? String::fromUTF8 ("Réglages") : String ("Effets"), 24, 73, 112, 30,
+                Justification::centredLeft);
+    if (isPositiveAndBelow (shownPreset, (int)Presets::all().size()))
+    {
+        g.setFont (swellFont (12.0f));
+        g.setColour (dim);
+        g.drawFittedText (String::fromUTF8 (Presets::all()[(size_t)shownPreset].description), 135, 75, 525, 27,
+                          Justification::centredLeft, 2);
+    }
+    g.setColour (border);
+    g.drawHorizontalLine (317, 24, 776);
+    caption (g, "MIX", {174, 327, 50, 18});
+    caption (g, "GAIN", {377, 327, 50, 18});
+    g.setColour (text);
     g.setFont (swellFont (12.0f, true));
-    g.drawText ("AD-LIB FX", 64, 34, 150, 16, juce::Justification::centredLeft);
-
-    g.setColour (well);
-    g.fillRoundedRectangle (366.0f, 8.0f, 396.0f, 48.0f, 10.0f);
-    g.setColour (border);
-    g.drawRoundedRectangle (366.5f, 8.5f, 395.0f, 47.0f, 10.0f, 1.0f);
-
-    // Side panels
-    g.setColour (panelDark);
-    g.fillRect (0, 65, 236, 625);
-    g.fillRect (952, 65, 168, 625);
-    g.setColour (border);
-    g.drawVerticalLine (236, 65.0f, 690.0f);
-    g.drawVerticalLine (952, 65.0f, 690.0f);
-
-    // Preset browser
-    drawSectionLabel (g, "PRESETS", { 16, 80, 200, 16 });
-    const auto& preset = Presets::all()[(size_t) proc.getCurrentPreset()];
-    const juce::Rectangle<float> desc (16.0f, 590.0f, 204.0f, 84.0f);
-    g.setColour (well);
-    g.fillRoundedRectangle (desc, 10.0f);
-    g.setColour (border);
-    g.drawRoundedRectangle (desc, 10.0f, 1.0f);
+    g.drawText (mix.getTextFromValue (mix.getValue()), 225, 327, 108, 18, Justification::centredRight);
+    g.drawText (gain.getTextFromValue (gain.getValue()), 433, 327, 104, 18, Justification::centredRight);
+    caption (g, "SORTIE", {627, 322, 75, 18});
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        Rectangle<float> bar (627.0f, 343.0f + 9.0f * ch, 149.0f, 5.0f);
+        g.setColour (track);
+        g.fillRoundedRectangle (bar, 2);
+        const float db = Decibels::gainToDecibels (levels[ch], -54.0f);
+        float fraction = jlimit (0.0f, 1.0f, (db + 54.0f) / 54.0f);
+        g.setColour (db > 0 ? orange : accentBlue);
+        g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * fraction), 2);
+    }
     g.setColour (dim);
-    g.setFont (swellFont (12.0f));
-    g.drawFittedText (preset.description, desc.reduced (12.0f, 10.0f).toNearestInt(), juce::Justification::topLeft, 5, 1.0f);
-
-    // Chain
-    drawSectionLabel (g, utf8 ("CHA\xc3\x8eNE D'EFFETS"), { 260, 474, 120, 16 });
-    g.setColour (dim);
-    g.setFont (swellFont (11.0f));
-    g.drawText (utf8 ("\xc2\xb7 clique sur un effet pour le r\xc3\xa9gler"), 372, 474, 300, 16, juce::Justification::centredLeft);
-
-    // Output
-    drawSectionLabel (g, "SORTIE", { 968, 80, 120, 16 });
-    g.setColour (dim);
-    g.setFont (swellFont (10.0f));
-    g.drawText ("L", 1012, 420, 14, 14, juce::Justification::centred);
-    g.drawText ("R", 1046, 420, 14, 14, juce::Justification::centred);
-
-    g.setFont (swellFont (12.0f));
-    g.drawText ("MIX", 968, 448, 60, 18, juce::Justification::centredLeft);
-    g.drawText ("GAIN", 968, 508, 60, 18, juce::Justification::centredLeft);
-    g.setColour (text);
-    g.drawText (mixSlider.getTextFromValue (mixSlider.getValue()), 1028, 448, 76, 18, juce::Justification::centredRight);
-    g.drawText (gainSlider.getTextFromValue (gainSlider.getValue()), 1028, 508, 76, 18, juce::Justification::centredRight);
-
-    // Footer
-    g.setColour (well);
-    g.fillRect (0, 690, 1120, 30);
-    g.setColour (border);
-    g.drawHorizontalLine (690, 0.0f, 1120.0f);
-    g.setColour (dim);
-    g.setFont (swellFont (11.0f));
-    g.drawText ("Swell Ad-lib FX v" + juce::String (JucePlugin_VersionString), 20, 690, 300, 30, juce::Justification::centredLeft);
-    g.drawText ("by @sevyondatracks", 800, 690, 300, 30, juce::Justification::centredRight);
+    g.setFont (swellFont (10.5f));
+    g.drawText ("SWELL AUDIO  /  " JucePlugin_VersionString, 24, 372, 255, 13, Justification::centredLeft);
+    g.setFont (swellFont (11.5f));
+    g.drawText ("by sevyondatracks", getWidth() - 24 - 180, 371, 180, 15, Justification::centredRight);
 }

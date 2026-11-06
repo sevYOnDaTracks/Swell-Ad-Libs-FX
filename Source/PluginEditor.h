@@ -5,168 +5,97 @@
 #include "SwellLookAndFeel.h"
 
 using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
-using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
-// Scrolling level of the output signal (the "LIVE" strip)
-class LiveDisplay : public juce::Component
+struct ControlSpec
 {
-public:
-    explicit LiveDisplay (SwellAdLibProcessor& p) : proc (p) {}
-    void paint (juce::Graphics&) override;
-
-private:
-    SwellAdLibProcessor& proc;
+    const char* name;
+    const char* parameter;
+};
+struct EffectSpec
+{
+    const char* name;
+    const char* power;
+    const char* mode;
+    std::array<ControlSpec, 4> controls;
 };
 
-// The four big knobs: SPACE, DIRT, PITCH, WIDTH
-class MacroPanel : public juce::Component
+class ParameterKnob : public juce::Component
 {
-public:
-    explicit MacroPanel (SwellAdLibProcessor&);
+  public:
+    explicit ParameterKnob (SwellAdLibProcessor&);
+    void bind (const ControlSpec&, juce::Colour, std::function<void()> enable = {});
     void paint (juce::Graphics&) override;
     void resized() override;
 
-private:
-    juce::Rectangle<int> card (int i) const;
-    void ensureModuleOn (int macro);
-
+  private:
     SwellAdLibProcessor& proc;
-    juce::Slider knobs[4];
-    std::unique_ptr<SliderAttachment> attachments[4];
+    juce::Slider dial;
+    juce::String label;
+    juce::Colour ink;
+    std::unique_ptr<SliderAttachment> attachment;
 };
 
-// One effect of the chain: icon + name, orange when on, outlined when selected
-class ModuleButton : public juce::Component, public juce::SettableTooltipClient
+// Four signal stages have independent on/off, algorithm choice and wet amount.
+class EffectStrip : public juce::Component
 {
-public:
-    ModuleButton (const juce::String& name, const juce::String& svgIcon);
-    void setState (bool isOn, bool isSelected);
-    std::function<void()> onClick;
-
-    void paint (juce::Graphics&) override;
-    void mouseUp (const juce::MouseEvent&) override;
-    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
-    void mouseExit (const juce::MouseEvent&) override { repaint(); }
-
-private:
-    juce::String name;
-    juce::Path icon;
-    bool on = false, selected = false;
-};
-
-// Settings of the selected effect: ON/OFF, mode buttons and three sliders
-class ModulePanel : public juce::Component
-{
-public:
-    explicit ModulePanel (SwellAdLibProcessor&);
-    void setModule (int index);
+  public:
+    EffectStrip (SwellAdLibProcessor&, int effect);
     void refresh();
-    std::function<void()> onBack;
-
     void paint (juce::Graphics&) override;
     void resized() override;
 
-private:
-    void pickMode (int k);
-
+  private:
     SwellAdLibProcessor& proc;
-    int module = 0;
-    juce::TextButton back { "< Macros" }, power { "ON" };
-    juce::OwnedArray<juce::TextButton> modeButtons;
-    juce::Slider sliders[3];
-    std::unique_ptr<SliderAttachment> sliderAtt[3];
-    std::unique_ptr<ButtonAttachment> powerAtt;
+    int index;
+    juce::TextButton power;
+    juce::ComboBox mode;
+    ParameterKnob amount;
+    bool active = false;
 };
 
-// Presets of the chosen category
-class PresetList : public juce::Component
+class DetailView : public juce::Component
 {
-public:
-    explicit PresetList (SwellAdLibProcessor& p) : proc (p) {}
-    void setCategory (const juce::String&);
+  public:
+    explicit DetailView (SwellAdLibProcessor&);
+    void refresh();
     void paint (juce::Graphics&) override;
-    void mouseUp (const juce::MouseEvent&) override;
-    void mouseMove (const juce::MouseEvent&) override;
-    void mouseExit (const juce::MouseEvent&) override { hover = -1; repaint(); }
+    void resized() override;
 
-private:
+  private:
+    void select (int);
     SwellAdLibProcessor& proc;
-    std::vector<int> items;
-    int hover = -1;
-    static constexpr int rowH = 44;
+    juce::ComboBox group, mode;
+    juce::TextButton power;
+    juce::OwnedArray<ParameterKnob> knobs;
+    int selected = 0;
 };
 
-// Current preset in the header; click for the full menu
-class PresetDisplay : public juce::Component
-{
-public:
-    explicit PresetDisplay (SwellAdLibProcessor& p) : proc (p) {}
-    void paint (juce::Graphics&) override;
-    void mouseUp (const juce::MouseEvent&) override;
-    std::function<void (int)> onPick;
-
-private:
-    SwellAdLibProcessor& proc;
-};
-
-class ThrowButton : public juce::Button
-{
-public:
-    ThrowButton() : juce::Button ("Throw") { setClickingTogglesState (true); }
-    void paintButton (juce::Graphics&, bool over, bool down) override;
-};
-
-class Meter : public juce::Component
-{
-public:
-    void setLevel (float l) { level = l; repaint(); }
-    void paint (juce::Graphics&) override;
-
-private:
-    float level = 0.0f;
-};
-
-//==============================================================================
 class SwellAdLibEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
-public:
+  public:
     explicit SwellAdLibEditor (SwellAdLibProcessor&);
     ~SwellAdLibEditor() override;
-
     void paint (juce::Graphics&) override;
     void resized() override;
 
-private:
+  private:
     void timerCallback() override;
-    void selectModule (int index);
-    void selectCategory (const juce::String&);
-    void presetChanged();
+    void refresh();
+    void showDetails (bool);
+    void zoomMenu();
 
     SwellAdLibProcessor& proc;
     SwellLookAndFeel lnf;
-
-    juce::TextButton prevButton { "<" }, nextButton { ">" }, abButton { "A" }, bypassButton { "BYPASS" };
-    PresetDisplay presetDisplay;
-    juce::OwnedArray<juce::TextButton> categoryButtons;
-    PresetList presetList;
-    juce::String category;
-
-    LiveDisplay live;
-    MacroPanel macros;
-    ModulePanel modulePanel;
-    juce::OwnedArray<ModuleButton> moduleButtons;
-    int selected = -1;
-
-    ThrowButton throwButton;
-    Meter meterL, meterR;
-    juce::Slider mixSlider, gainSlider;
-    std::unique_ptr<SliderAttachment> mixAtt, gainAtt;
-    std::unique_ptr<ButtonAttachment> throwAtt, bypassAtt;
-
-    juce::TooltipWindow tooltips { this, 400 };
+    juce::ComboBox presets;
+    juce::TextButton previous{"<"}, next{">"}, compare{"A / B"}, bypass{"Bypass"};
+    juce::OwnedArray<EffectStrip> strips;
+    DetailView detail;
+    juce::TextButton detailsButton, throwButton{"Throw"}, zoom;
+    juce::Slider mix, gain;
+    std::unique_ptr<SliderAttachment> mixAttachment, gainAttachment;
+    juce::TooltipWindow tooltips{this, 450};
+    bool detailsShown = false;
     int shownPreset = -1;
-    bool snapshotDone = false;
-    float levelL = 0.0f, levelR = 0.0f;
-
+    float levels[2]{};
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SwellAdLibEditor)
 };

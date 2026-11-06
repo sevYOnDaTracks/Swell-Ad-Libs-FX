@@ -40,10 +40,7 @@ public:
     bool isOnB() const { return onB; }
 
     // Metering, read by the editor
-    static constexpr int waveSize = 128;
     std::atomic<float> peakL { 0.0f }, peakR { 0.0f };
-    std::array<std::atomic<float>, waveSize> wave {};
-    std::atomic<int> waveWrite { 0 };
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -58,8 +55,6 @@ private:
     juce::ValueTree slotA, slotB;
     bool onB = false;
 
-    float waveAcc = 0.0f;
-    int waveCount = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SwellAdLibProcessor)
 };

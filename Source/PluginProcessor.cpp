@@ -1,3 +1,4 @@
+#include "ResizableEditor.h"
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "Presets.h"
@@ -11,9 +12,9 @@ juce::String hertz (float v, int)
     return v >= 1000.0f ? juce::String (v / 1000.0f, 1) + " kHz" : juce::String (juce::roundToInt (v)) + " Hz";
 }
 
-std::unique_ptr<juce::AudioParameterFloat> amount (const char* id, const char* name, float def)
+std::unique_ptr<juce::AudioParameterFloat> amount (const char* id, const char* name, float def, int version = 1)
 {
-    return std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id, 1 }, name, juce::NormalisableRange<float> (0.0f, 1.0f), def,
+    return std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id, version }, name, juce::NormalisableRange<float> (0.0f, 1.0f), def,
                                                         juce::AudioParameterFloatAttributes().withStringFromValueFunction (percent));
 }
 
@@ -111,6 +112,17 @@ juce::AudioProcessorValueTreeState::ParameterLayout SwellAdLibProcessor::createL
                         [] (float v, int) { return (v > 0.05f ? "+" : "") + juce::String (v, 1) + " dB"; }));
     layout.add (toggle ("bypass", "Bypass", false));
 
+    // Append to the old parameter list so legacy automation keeps its original indices.
+    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "flange_on", 2 }, "Flange On", false));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "flange_mode", 2 }, "Flange Type", juce::StringArray { "Flanger", "Flangus" }, 0));
+    layout.add (amount ("flange_mix", "Flange Mix", 0.55f, 2));
+    layout.add (amount ("flange_depth", "Flange Depth", 0.55f, 2));
+    layout.add (amount ("flange_feedback", "Flange Feedback", 0.4f, 2));
+    layout.add (amount ("delay_duck", "Delay Ducking", 0.0f, 2));
+    layout.add (amount ("reverb_duck", "Reverb Ducking", 0.0f, 2));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "flange_rate", 2 }, "Flange Rate",
+                skewed (0.05f, 4.0f, 0.5f), 0.35f, juce::AudioParameterFloatAttributes().withStringFromValueFunction (
+                    [] (float v, int) { return juce::String (v, 2) + " Hz"; })));
     return layout;
 }
 
@@ -120,8 +132,7 @@ SwellAdLibProcessor::SwellAdLibProcessor()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "SwellAdLibFX", createLayout())
 {
-    for (auto& w : wave) w.store (0.0f);
-    loadPreset (0);
+    loadPreset (17); // Velvet Flangus, the first preset in the new bank.
 }
 
 bool SwellAdLibProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -135,7 +146,7 @@ bool SwellAdLibProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
 void SwellAdLibProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     engine.prepare (sampleRate);
-    dryBuffer.setSize (2, samplesPerBlock);
+    dryBuffer.setSize (2, juce::jlimit (1, AdLib::maxBlock, samplesPerBlock));
     mixSmooth.reset (sampleRate, 0.05);
     gainSmooth.reset (sampleRate, 0.05);
     mixSmooth.setCurrentAndTargetValue (raw ("out_mix"));
@@ -168,9 +179,13 @@ AdLib::Settings SwellAdLibProcessor::readSettings() const
     s.modOn = on ("mod_on");       s.modMode = mode ("mod_mode");
     s.modDepth = raw ("mod_depth"); s.modRate = raw ("mod_rate");    s.modMix = raw ("mod_mix");
 
+    s.flangeOn = on ("flange_on"); s.flangeMode = mode ("flange_mode");
+    s.flangeMix = raw ("flange_mix"); s.flangeDepth = raw ("flange_depth");
+    s.flangeFeedback = raw ("flange_feedback"); s.flangeRate = raw ("flange_rate");
     s.delayOn = on ("delay_on");   s.delayMode = mode ("delay_mode");
     s.delayFeedback = raw ("delay_feedback"); s.delayTone = raw ("delay_tone"); s.delayMix = raw ("delay_mix");
     s.throwOn = on ("throw");
+    s.delayDuck = raw ("delay_duck"); s.reverbDuck = raw ("reverb_duck");
 
     s.reverbOn = on ("reverb_on"); s.reverbMode = mode ("reverb_mode");
     s.reverbSize = raw ("reverb_size"); s.preDelayMs = raw ("reverb_predelay"); s.reverbMix = raw ("reverb_mix");
@@ -198,48 +213,40 @@ void SwellAdLibProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     if (raw ("bypass") < 0.5f)
     {
-        if (dryBuffer.getNumSamples() < n)
-            dryBuffer.setSize (2, n, false, false, true);
-        dryBuffer.copyFrom (0, 0, buffer, 0, 0, n);
-        dryBuffer.copyFrom (1, 0, buffer, 1, 0, n);
-
-        auto* L = buffer.getWritePointer (0);
-        auto* R = buffer.getWritePointer (1);
-        engine.process (L, R, n, readSettings());
-
+        const auto settings = readSettings();
         mixSmooth.setTargetValue (raw ("out_mix"));
         gainSmooth.setTargetValue (juce::Decibels::decibelsToGain (raw ("out_gain")));
-        const auto* dL = dryBuffer.getReadPointer (0);
-        const auto* dR = dryBuffer.getReadPointer (1);
-        for (int i = 0; i < n; ++i)
+        // Some hosts deliver blocks larger than the prepared size. Reuse the same
+        // scratch space instead of resizing a buffer on the audio thread.
+        for (int pos = 0; pos < n; pos += dryBuffer.getNumSamples())
         {
-            const float mix = mixSmooth.getNextValue();
-            const float gain = gainSmooth.getNextValue();
-            L[i] = (dL[i] * (1.0f - mix) + L[i] * mix) * gain;
-            R[i] = (dR[i] * (1.0f - mix) + R[i] * mix) * gain;
+            const int count = juce::jmin (n - pos, dryBuffer.getNumSamples());
+            dryBuffer.copyFrom (0, 0, buffer, 0, pos, count);
+            dryBuffer.copyFrom (1, 0, buffer, 1, pos, count);
+            auto* left = buffer.getWritePointer (0, pos);
+            auto* right = buffer.getWritePointer (1, pos);
+            engine.process (left, right, count, settings);
+            const auto* dryL = dryBuffer.getReadPointer (0);
+            const auto* dryR = dryBuffer.getReadPointer (1);
+            for (int i = 0; i < count; ++i)
+            {
+                const float mix = mixSmooth.getNextValue();
+                const float gain = gainSmooth.getNextValue();
+                left[i] = (dryL[i] * (1.0f - mix) + left[i] * mix) * gain;
+                right[i] = (dryR[i] * (1.0f - mix) + right[i] * mix) * gain;
+            }
         }
     }
 
-    // Meters and the LIVE display
+    else
+        engine.discardTails();
+
+    // Output peaks for the two compact meters
     const float pl = buffer.getMagnitude (0, 0, n), pr = buffer.getMagnitude (1, 0, n);
     peakL.store (juce::jmax (pl, peakL.load()));
     peakR.store (juce::jmax (pr, peakR.load()));
 
-    const auto* L = buffer.getReadPointer (0);
-    const auto* R = buffer.getReadPointer (1);
-    const int chunk = (int) (getSampleRate() * 0.02);
-    for (int i = 0; i < n; ++i)
-    {
-        waveAcc = juce::jmax (waveAcc, std::abs (L[i] + R[i]) * 0.5f);
-        if (++waveCount >= chunk)
-        {
-            const int w = waveWrite.load();
-            wave[(size_t) w].store (waveAcc);
-            waveWrite.store ((w + 1) % waveSize);
-            waveAcc = 0.0f;
-            waveCount = 0;
-        }
-    }
+
 }
 
 void SwellAdLibProcessor::loadPreset (int index)
@@ -289,14 +296,21 @@ void SwellAdLibProcessor::setStateInformation (const void* data, int sizeInBytes
         if (xml->hasTagName (apvts.state.getType()))
         {
             auto state = juce::ValueTree::fromXml (*xml);
-            currentPreset.store ((int) state.getProperty ("preset", 0));
+            for (auto* parameter : getParameters())
+                if (auto* param = dynamic_cast<juce::RangedAudioParameter*> (parameter))
+                    if (param->getVersionHint() == 2 && ! state.getChildWithProperty ("id", param->getParameterID()).isValid())
+                        state.appendChild (juce::ValueTree ("PARAM", {{"id", param->getParameterID()}, {"value", param->convertFrom0to1 (param->getDefaultValue())}}), nullptr);
+            currentPreset.store (juce::jlimit (0, (int) Presets::all().size() - 1, (int) state.getProperty ("preset", 0)));
+            slotA = {};
+            slotB = {};
+            onB = false;
             apvts.replaceState (state);
         }
 }
 
 juce::AudioProcessorEditor* SwellAdLibProcessor::createEditor()
 {
-    return new SwellAdLibEditor (*this);
+    return new ResizableEditor(*this, new SwellAdLibEditor(*this));
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
