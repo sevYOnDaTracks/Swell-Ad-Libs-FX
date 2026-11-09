@@ -1,10 +1,15 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include "Licence/SwellLicence.h"
 #include "AdLibEngine.h"
 
 class SwellAdLibProcessor : public juce::AudioProcessor
 {
+public:
+    // Licence Swell : partagée par toutes les instances ; silence tant que le plugin n'est pas activé.
+    juce::SharedResourcePointer<swell::Licence> licence;
+
 public:
     SwellAdLibProcessor();
 

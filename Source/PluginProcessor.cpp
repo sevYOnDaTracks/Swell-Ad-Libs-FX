@@ -202,7 +202,7 @@ AdLib::Settings SwellAdLibProcessor::readSettings() const
 }
 
 void SwellAdLibProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
-{
+{ if (! licence->isUnlocked()) { buffer.clear(); return; } 
     juce::ScopedNoDenormals noDenormals;
     const int n = buffer.getNumSamples();
     if (buffer.getNumChannels() < 2 || n == 0)
@@ -310,7 +310,7 @@ void SwellAdLibProcessor::setStateInformation (const void* data, int sizeInBytes
 
 juce::AudioProcessorEditor* SwellAdLibProcessor::createEditor()
 {
-    return new ResizableEditor(*this, new SwellAdLibEditor(*this));
+    return swell::LicenceGuard::attach (new ResizableEditor(*this, new SwellAdLibEditor(*this)));
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

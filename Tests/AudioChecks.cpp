@@ -191,6 +191,7 @@ void compatibility()
 
 int main()
 {
+    swell::Licence::unlockForTesting(); // rendu hors ligne, sans fichier de licence
     juce::ScopedJuceInitialiser_GUI gui;
     try
     {
