@@ -4,3 +4,4 @@ build-mac/
 .DS_Store
 build-log.txt
 demos/
+/dist-licence/
